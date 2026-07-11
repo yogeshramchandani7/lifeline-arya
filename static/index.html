@@ -133,7 +133,7 @@
             <div id="outcome" class="hidden mt-3 pt-3 border-t border-slate-200 text-sm text-slate-600"></div>
           </div>
         </div>
-        <p class="text-center text-slate-400 text-xs mt-5">Twilio ConversationRelay + Voice SDK · GPT-4.1 · Deepgram + ElevenLabs</p>
+        <p class="text-center text-slate-400 text-xs mt-5">GPT-4.1 · Twilio ConversationRelay (phone) · Web Speech API (in-browser voice)</p>
       </main>
     </div>
   </div>
@@ -213,22 +213,79 @@ function startPoll(){ stopPoll(); pollTimer=setInterval(poll,1000); poll(); }
 function stopPoll(){ if(pollTimer)clearInterval(pollTimer); pollTimer=null; }
 function showCall(){ $('callRegion').classList.remove('hidden'); $('outcome').classList.add('hidden'); $('dispoPill').classList.add('hidden'); }
 
+// ---- Talk on browser: Web Speech API (mic -> STT, TTS out), no Twilio ----
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recog = null, voiceWs = null, voiceState = 'idle', turns = [];
+
+function bubbleHtml(role, text) {
+  const isArya = role === 'assistant';
+  return `<div class="flex ${isArya?'justify-start':'justify-end'}">
+    <div class="max-w-[85%] rounded-2xl px-3.5 py-2 ${isArya?'bg-teal-100 text-slate-800':'bg-rose-100 text-slate-800'}">
+      <div class="text-[10px] uppercase tracking-wide ${isArya?'text-teal-600':'text-rose-500'} mb-0.5">${isArya?'Arya':'You'}</div>
+      <div class="text-sm leading-snug">${text}</div></div></div>`;
+}
+function pushBubble(role, text) {
+  turns.push({ role, text });
+  $('transcript').innerHTML = turns.map(t => bubbleHtml(t.role, t.text)).join('');
+  $('transcript').scrollTop = $('transcript').scrollHeight;
+}
+function setStatus(s) { $('statusPill').textContent = s; }
+
+function speak(text, onDone) {
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'en-US'; u.rate = 1.02;
+  u.onend = () => onDone && onDone();
+  u.onerror = () => onDone && onDone();
+  try { speechSynthesis.cancel(); } catch(e){}
+  speechSynthesis.speak(u);
+}
+function startListening() {
+  if (!recog || voiceState === 'ended') return;
+  voiceState = 'listening'; setStatus('🎤 listening…');
+  try { recog.start(); } catch(e) {}
+}
+function setupRecog() {
+  recog = new SR();
+  recog.lang = 'en-US'; recog.interimResults = false; recog.continuous = false; recog.maxAlternatives = 1;
+  recog.onresult = (e) => {
+    const text = (e.results[0][0].transcript || '').trim();
+    if (!text) { startListening(); return; }
+    pushBubble('user', text);
+    voiceState = 'thinking'; setStatus('💭 Arya is thinking…');
+    if (voiceWs && voiceWs.readyState === 1) voiceWs.send(JSON.stringify({ type: 'user', text }));
+  };
+  recog.onerror = (ev) => {
+    if (ev.error === 'no-speech') { if (voiceState === 'listening') startListening(); return; }
+    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') { toast('Microphone permission denied.', 'error'); endCallUI(); }
+  };
+  recog.onend = () => { if (voiceState === 'listening') startListening(); };
+}
+
 $('talkBtn').onclick = async () => {
-  if (!cfg.browser_voice_ready) { toast('Browser voice not configured — add Twilio API Key + TwiML App to .env (see README).', 'error'); return; }
-  if (typeof Twilio === 'undefined' || !Twilio.Device) { toast('Twilio Voice SDK failed to load (check your connection).', 'error'); return; }
+  if (!selected) return;
+  if (!SR) { toast('Talk on browser needs Chrome (Web Speech API). Try Chrome, or use the phone Call.', 'error'); return; }
   try {
-    const tok = await j('/api/voice-token');
-    if (tok.error) { toast(tok.error, 'error'); return; }
     const bc = await jpost('/api/browser-call', { donor_id: selected.id });
     activeCallId = bc.call_id;
-    showCall(); $('statusPill').textContent = 'requesting mic…'; startPoll();
-    device = new Twilio.Device(tok.token, { codecPreferences: ['opus','pcmu'] });
-    activeCall = await device.connect({ params: { donor_id: String(selected.id), call_id: String(activeCallId) } });
+    turns = []; $('transcript').innerHTML = ''; showCall(); setStatus('connecting…');
     $('talkBtn').classList.add('pulse-ring');
-    activeCall.on('accept', () => $('statusPill').textContent = 'in call');
-    activeCall.on('disconnect', endCallUI);
-    activeCall.on('error', (e) => { toast('Call error: ' + (e.message||e), 'error'); endCallUI(); });
-  } catch (e) { toast('Could not start browser call: ' + e.message, 'error'); }
+    voiceState = 'connecting'; setupRecog();
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    voiceWs = new WebSocket(`${proto}://${location.host}/ws/webspeech?donor_id=${selected.id}&call_id=${activeCallId}`);
+    voiceWs.onmessage = (evt) => {
+      const m = JSON.parse(evt.data);
+      if (m.type === 'say') {
+        pushBubble('assistant', m.text);
+        voiceState = 'speaking'; setStatus('🔊 Arya speaking…');
+        try { recog && recog.stop(); } catch(e){}
+        speak(m.text, () => { if (voiceState !== 'ended') startListening(); });
+      } else if (m.type === 'end') {
+        speak(turns.length ? '' : ''); endCallUI(true);
+      }
+    };
+    voiceWs.onclose = () => { if (voiceState !== 'ended') endCallUI(); };
+    voiceWs.onerror = () => toast('Voice connection error.', 'error');
+  } catch (e) { toast('Could not start: ' + e.message, 'error'); }
 };
 
 $('callBtn').onclick = async () => {
@@ -236,14 +293,20 @@ $('callBtn').onclick = async () => {
   const res = await jpost('/api/call', { donor_id: selected.id });
   if (res.error) toast('Call not placed: ' + res.error, 'error');
   else toast('Calling ' + selected.name + ' at ' + selected.phone + '…');
-  activeCallId = res.call_id; showCall(); startPoll();
+  activeCallId = res.call_id; turns = []; showCall(); startPoll();
 };
 
-$('endBtn').onclick = () => { if (activeCall) activeCall.disconnect(); else endCallUI(); };
-function endCallUI() {
+$('endBtn').onclick = () => endCallUI();
+function endCallUI(ended) {
+  voiceState = 'ended';
   $('talkBtn').classList.remove('pulse-ring');
-  if (device) { try { device.destroy(); } catch(e){} device = null; }
-  activeCall = null; setTimeout(poll, 800);
+  try { recog && recog.abort(); } catch(e){}
+  recog = null;
+  try { speechSynthesis.cancel(); } catch(e){}
+  if (voiceWs && voiceWs.readyState <= 1) { try { voiceWs.close(); } catch(e){} }
+  voiceWs = null;
+  setStatus(ended ? 'done' : 'ended');
+  setTimeout(poll, 500);  // pull final disposition/outcome from the server
 }
 
 $('donorPick').onchange = () => renderDonor(donors.find(d => d.id == $('donorPick').value));

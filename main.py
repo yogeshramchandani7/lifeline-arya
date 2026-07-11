@@ -236,3 +236,46 @@ async def _end(websocket: WebSocket, session: CallSession) -> None:
             await websocket.send_text(json.dumps({"type": "end"}))
         except Exception:
             pass
+
+
+# ---------------- Web Speech browser voice (no Twilio) ----------------
+@app.websocket("/ws/webspeech")
+async def ws_webspeech(websocket: WebSocket):
+    """Twilio-free browser voice: the page does STT/TTS with the Web Speech API
+    and exchanges plain text with Arya's brain here.
+    Client -> {type:'user', text}; Server -> {type:'say', text} / {type:'end'}."""
+    await websocket.accept()
+    params = websocket.query_params
+    donor_id = int(params.get("donor_id", 0))
+    call_id = int(params.get("call_id", 0))
+    session = CallSession(call_id=call_id, donor_id=donor_id, call_sid=None)
+
+    repo.update_call(call_id, status="in_progress")
+    greeting = welcome_greeting(session.ctx)
+    repo.append_transcript(call_id, "assistant", greeting)
+    await websocket.send_text(json.dumps({"type": "say", "text": greeting}))
+    log.info("WebSpeech WS open: call_id=%s donor_id=%s", call_id, donor_id)
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            msg = json.loads(raw)
+            if msg.get("type") == "user":
+                text = (msg.get("text") or "").strip()
+                if not text:
+                    continue
+                repo.append_transcript(call_id, "user", text)
+                reply = await asyncio.to_thread(session.handle_user, text)
+                if reply:
+                    repo.append_transcript(call_id, "assistant", reply)
+                    await websocket.send_text(json.dumps({"type": "say", "text": reply}))
+                if session.ended:
+                    await websocket.send_text(json.dumps({"type": "end"}))
+                    break
+    except WebSocketDisconnect:
+        log.info("WebSpeech WS disconnect: call_id=%s", call_id)
+    except Exception:
+        log.exception("WebSpeech WS error: call_id=%s", call_id)
+    finally:
+        session.finalize()
+        log.info("WebSpeech WS closed: call_id=%s disposition=%s", call_id, session.disposition)
