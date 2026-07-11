@@ -59,16 +59,17 @@ every turn persisted → console polls /api/calls/{id} for the live transcript +
 
    The live transcript, booking, and red/orange/yellow/green disposition appear on the Arya card.
 
-## "Talk on browser" setup (optional — the phone Call path works without it)
-Browser voice routes your mic **through Twilio Voice SDK** into the same ConversationRelay agent.
-Add to `.env`:
-- **`TWILIO_API_KEY_SID` / `TWILIO_API_KEY_SECRET`** — Console → Account → API keys & tokens → create a
-  Standard key.
-- **`TWIML_APP_SID`** — Console → Voice → TwiML Apps → create one, and set its **Voice Request URL** to
-  `https://<PUBLIC_URL>/voice/browser` (HTTP POST). Update this URL whenever your ngrok host changes.
+## Two ways to talk to Arya
+1. **🎙️ Talk on browser (no setup, works anywhere):** uses the browser's built-in **Web Speech API**
+   (`SpeechRecognition` + `SpeechSynthesis`) for mic-in / voice-out, talking to Arya's GPT-4.1 brain over
+   the `/ws/webspeech` WebSocket. **No Twilio account required.** Open the console in **Chrome**, click
+   *Talk on browser*, allow the mic, and speak. (Chrome/Edge only — that's where the Web Speech API lives.)
+2. **📞 Call (Twilio-native phone call):** places a real outbound call via Twilio **ConversationRelay**
+   (Deepgram STT + ElevenLabs TTS, managed by Twilio) to the donor's number. Needs the Twilio account
+   creds above + ngrok, and a paid/upgraded Twilio account for the full flow.
 
-With those set, `/api/config` reports `browser_voice_ready: true` and the **Talk on browser** button goes
-live. The Voice SDK is loaded from jsdelivr (`@twilio/voice-sdk`).
+*(An optional Twilio Voice-SDK browser path also exists — `/voice/browser` + `mint_voice_token` — which
+needs `TWILIO_API_KEY_SID/SECRET` and a `TWIML_APP_SID`; the Web Speech mode above is the zero-setup default.)*
 
 ## Demo script to try on the call
 - *Happy path:* "Yes, this is Alex." → agree to donate → pick a slot → Arya books it + texts you → **green**.
