@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
@@ -24,6 +25,7 @@ log = logging.getLogger("arya")
 
 app = FastAPI(title="LifeLine — Arya")
 STATIC = Path(__file__).parent / "static"
+app.mount("/media", StaticFiles(directory=str(STATIC)), name="media")
 
 
 @app.on_event("startup")
