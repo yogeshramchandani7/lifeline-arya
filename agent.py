@@ -6,6 +6,7 @@ returned text. Tools mutate the DB (via repo) and Twilio (SMS / transfer) and se
 the call's outcome + disposition.
 """
 import json
+import re
 
 from openai import OpenAI
 
@@ -26,6 +27,15 @@ def _openai() -> OpenAI:
 
 # Disposition severity (higher wins)
 _SEVERITY = {"green": 1, "yellow": 2, "orange": 3, "red": 4}
+
+
+def _strip_dashes(text: str) -> str:
+    """Hard guarantee: no dash or hyphen ever reaches the transcript or the voice."""
+    text = text.replace("—", ", ").replace("–", ", ").replace("―", ", ")
+    text = text.replace("-", " ")
+    text = re.sub(r"\s+([,.!?])", r"\1", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()
 
 TOOLS = [
     {"type": "function", "function": {
@@ -150,7 +160,7 @@ class CallSession:
                         "content": json.dumps(result),
                     })
                 continue  # let the model speak after seeing tool results
-            reply = (msg.content or "").strip()
+            reply = _strip_dashes((msg.content or "").strip())
             self.messages.append({"role": "assistant", "content": reply})
             break
         return reply
